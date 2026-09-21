@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: brigade-zero-android-build
+  cancel-in-progress: true
+
 jobs:
   android:
     runs-on: ubuntu-latest
