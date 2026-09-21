@@ -21,47 +21,71 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import base64, gzip, pathlib, string, sys
+          import base64, gzip, pathlib, string, zlib
+
           folder = pathlib.Path("build_payload")
           paths = sorted(folder.glob("part-*"))
           parts = [p.read_text().strip() for p in paths]
           joined = "".join(parts)
 
-          def valid_archive(text):
+          def check(text):
               try:
                   raw = base64.b64decode(text, validate=True)
                   unpacked = gzip.decompress(raw)
-                  return raw, unpacked
+                  if b"BlitzZeroAndroid/project.godot" not in unpacked:
+                      return None
+                  if b"BlitzZeroAndroid/export_presets.cfg" not in unpacked:
+                      return None
+                  return raw
               except Exception:
                   return None
 
-          result = valid_archive(joined)
-          if result is None:
-              # One character was lost from part-ac during connector transfer.
-              # Recover it by exhaustive insertion and accept only a gzip stream
-              # with a valid checksum and the expected Godot project files.
+          raw = check(joined)
+          if raw is None:
+              # The connector transfer dropped exactly one Base64 character.
+              # Decode with a harmless final sextet, then find the compressed
+              # byte at which gzip first becomes invalid. That localizes the
+              # missing Base64 character to a tiny search window.
+              padded = joined + "A"
+              damaged = base64.b64decode(padded, validate=False)
+              dec = zlib.decompressobj(31)
+              fail_byte = None
+              for i, b in enumerate(damaged):
+                  try:
+                      dec.decompress(bytes((b,)))
+                  except zlib.error:
+                      fail_byte = i
+                      break
+              if fail_byte is None:
+                  fail_byte = len(damaged) // 2
+
+              approx = max(0, min(len(joined), (fail_byte * 4) // 3))
               alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
-              target_index = next((i for i,p in enumerate(paths) if p.name == "part-ac"), 2)
-              target = parts[target_index]
-              prefix = "".join(parts[:target_index])
-              suffix = "".join(parts[target_index+1:])
+              print(f"gzip corruption localised near compressed byte {fail_byte}, base64 char ~{approx}")
+
               fixed = None
-              for pos in range(len(target) + 1):
-                  left, right = target[:pos], target[pos:]
-                  for ch in alphabet:
-                      candidate = prefix + left + ch + right + suffix
-                      checked = valid_archive(candidate)
-                      if checked and b"BlitzZeroAndroid/project.godot" in checked[1] and b"BlitzZeroAndroid/export_presets.cfg" in checked[1]:
-                          fixed = (candidate, checked[0], pos, ch)
+              # Wide enough to account for Base64 quartet boundaries and zlib buffering.
+              for radius in (24, 96, 384):
+                  lo = max(0, approx - radius)
+                  hi = min(len(joined), approx + radius + 1)
+                  for pos in range(lo, hi):
+                      left, right = joined[:pos], joined[pos:]
+                      for ch in alphabet:
+                          candidate = left + ch + right
+                          candidate_raw = check(candidate)
+                          if candidate_raw is not None:
+                              fixed = (candidate_raw, pos, ch)
+                              break
+                      if fixed:
                           break
                   if fixed:
                       break
-              if not fixed:
-                  raise SystemExit("Could not repair build payload")
-              joined, raw, pos, ch = fixed
-              print(f"Recovered payload: inserted one base64 character at part-ac position {pos}.")
+
+              if fixed is None:
+                  raise SystemExit("Could not automatically repair Base64 payload")
+              raw, pos, ch = fixed
+              print(f"Recovered payload by inserting one Base64 character at position {pos}.")
           else:
-              raw = result[0]
               print("Payload already valid.")
 
           pathlib.Path("brigade.tar.gz").write_bytes(raw)
