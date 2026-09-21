@@ -17,10 +17,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Reconstruct project
+      - name: Reconstruct and verify project
         shell: bash
         run: |
-          cat build_payload/part-* | base64 -d > brigade.tar.gz
+          python3 - <<'PY'
+          import base64, gzip, pathlib, string, sys
+          folder = pathlib.Path("build_payload")
+          paths = sorted(folder.glob("part-*"))
+          parts = [p.read_text().strip() for p in paths]
+          joined = "".join(parts)
+
+          def valid_archive(text):
+              try:
+                  raw = base64.b64decode(text, validate=True)
+                  unpacked = gzip.decompress(raw)
+                  return raw, unpacked
+              except Exception:
+                  return None
+
+          result = valid_archive(joined)
+          if result is None:
+              # One character was lost from part-ac during connector transfer.
+              # Recover it by exhaustive insertion and accept only a gzip stream
+              # with a valid checksum and the expected Godot project files.
+              alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
+              target_index = next((i for i,p in enumerate(paths) if p.name == "part-ac"), 2)
+              target = parts[target_index]
+              prefix = "".join(parts[:target_index])
+              suffix = "".join(parts[target_index+1:])
+              fixed = None
+              for pos in range(len(target) + 1):
+                  left, right = target[:pos], target[pos:]
+                  for ch in alphabet:
+                      candidate = prefix + left + ch + right + suffix
+                      checked = valid_archive(candidate)
+                      if checked and b"BlitzZeroAndroid/project.godot" in checked[1] and b"BlitzZeroAndroid/export_presets.cfg" in checked[1]:
+                          fixed = (candidate, checked[0], pos, ch)
+                          break
+                  if fixed:
+                      break
+              if not fixed:
+                  raise SystemExit("Could not repair build payload")
+              joined, raw, pos, ch = fixed
+              print(f"Recovered payload: inserted one base64 character at part-ac position {pos}.")
+          else:
+              raw = result[0]
+              print("Payload already valid.")
+
+          pathlib.Path("brigade.tar.gz").write_bytes(raw)
+          print(f"Verified gzip payload: {len(raw)} bytes")
+          PY
           tar -xzf brigade.tar.gz
           test -f BlitzZeroAndroid/project.godot
           test -f BlitzZeroAndroid/export_presets.cfg
