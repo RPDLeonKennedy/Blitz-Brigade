@@ -89,6 +89,14 @@ jobs:
           p.write_text(s)
           PY
 
+      - name: Upload reconstructed source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrigadeZero-Source-Debug
+          path: BlitzZeroAndroid
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -148,6 +156,20 @@ jobs:
         shell: bash
         run: |
           python3 BlitzZeroAndroid/tools/validate_project.py
+
+      - name: Runtime main-scene smoke test
+        shell: bash
+        run: |
+          set +e
+          "$GODOT_BIN" --headless --path BlitzZeroAndroid --quit-after 180 > runtime.log 2>&1
+          STATUS=$?
+          set -e
+          cat runtime.log
+          echo "Godot runtime exit status: $STATUS"
+          if grep -E "SCRIPT ERROR|Parse Error|Invalid call|Invalid access|Cannot get class|Failed to load script|Failed to instantiate" runtime.log; then
+            echo "Runtime script failure detected."
+            exit 1
+          fi
 
       - name: Export APK
         shell: bash
