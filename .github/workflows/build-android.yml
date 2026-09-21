@@ -28,67 +28,76 @@ jobs:
           import base64, gzip, pathlib, string, zlib
 
           folder = pathlib.Path("build_payload")
-          paths = sorted(folder.glob("part-*"))
-          parts = [p.read_text().strip() for p in paths]
+          parts = [p.read_text().strip() for p in sorted(folder.glob("part-*"))]
           joined = "".join(parts)
+          alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
 
-          def check(text):
+          def full_check(text):
               try:
                   raw = base64.b64decode(text, validate=True)
                   unpacked = gzip.decompress(raw)
-                  if b"BlitzZeroAndroid/project.godot" not in unpacked:
-                      return None
-                  if b"BlitzZeroAndroid/export_presets.cfg" not in unpacked:
-                      return None
-                  return raw
+                  if b"BlitzZeroAndroid/project.godot" in unpacked and b"BlitzZeroAndroid/export_presets.cfg" in unpacked:
+                      return raw
               except Exception:
-                  return None
+                  pass
+              return None
 
-          raw = check(joined)
+          raw = full_check(joined)
           if raw is None:
-              # The connector transfer dropped exactly one Base64 character.
-              # Decode with a harmless final sextet, then find the compressed
-              # byte at which gzip first becomes invalid. That localizes the
-              # missing Base64 character to a tiny search window.
-              padded = joined + "A"
-              damaged = base64.b64decode(padded, validate=False)
-              dec = zlib.decompressobj(31)
+              damaged = base64.b64decode(joined + "A", validate=False)
+
+              # Locate the first zlib failure.
+              probe = zlib.decompressobj(31)
               fail_byte = None
               for i, b in enumerate(damaged):
                   try:
-                      dec.decompress(bytes((b,)))
+                      probe.decompress(bytes((b,)))
                   except zlib.error:
                       fail_byte = i
                       break
               if fail_byte is None:
-                  fail_byte = len(damaged) // 2
+                  raise SystemExit("Unable to localise gzip corruption")
 
-              approx = max(0, min(len(joined), (fail_byte * 4) // 3))
-              alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
-              print(f"gzip corruption localised near compressed byte {fail_byte}, base64 char ~{approx}")
+              approx = (fail_byte * 4) // 3
+              print(f"gzip first fails near compressed byte {fail_byte}; searching around base64 char {approx}")
+
+              # Build a clean decompressor checkpoint well before the damaged region.
+              checkpoint_byte = max(0, fail_byte - 2600)
+              base_dec = zlib.decompressobj(31)
+              base_dec.decompress(damaged[:checkpoint_byte])
 
               fixed = None
-              # Wide enough to account for Base64 quartet boundaries and zlib buffering.
-              for radius in (24, 96, 384):
-                  lo = max(0, approx - radius)
-                  hi = min(len(joined), approx + radius + 1)
-                  for pos in range(lo, hi):
-                      left, right = joined[:pos], joined[pos:]
-                      for ch in alphabet:
-                          candidate = left + ch + right
-                          candidate_raw = check(candidate)
-                          if candidate_raw is not None:
-                              fixed = (candidate_raw, pos, ch)
-                              break
-                      if fixed:
+              radius = 2600
+              lo = max(0, approx - radius)
+              hi = min(len(joined), approx + radius + 1)
+              test_end = min(len(damaged), fail_byte + 1024)
+
+              for pos in range(lo, hi):
+                  left, right = joined[:pos], joined[pos:]
+                  for ch in alphabet:
+                      candidate = left + ch + right
+                      try:
+                          candidate_raw = base64.b64decode(candidate, validate=True)
+                          d = base_dec.copy()
+                          d.decompress(candidate_raw[checkpoint_byte:test_end])
+                      except Exception:
+                          continue
+
+                      # Very few candidates survive zlib. Validate gzip CRC/tar contents.
+                      try:
+                          unpacked = gzip.decompress(candidate_raw)
+                      except Exception:
+                          continue
+                      if b"BlitzZeroAndroid/project.godot" in unpacked and b"BlitzZeroAndroid/export_presets.cfg" in unpacked:
+                          fixed = (candidate_raw, pos, ch)
                           break
                   if fixed:
                       break
 
               if fixed is None:
-                  raise SystemExit("Could not automatically repair Base64 payload")
+                  raise SystemExit("Could not recover the missing Base64 character")
               raw, pos, ch = fixed
-              print(f"Recovered payload by inserting one Base64 character at position {pos}.")
+              print(f"Recovered payload at Base64 position {pos}.")
           else:
               print("Payload already valid.")
 
