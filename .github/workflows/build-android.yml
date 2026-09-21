@@ -24,89 +24,13 @@ jobs:
       - name: Reconstruct and verify project
         shell: bash
         run: |
-          python3 - <<'PY'
-          import base64, gzip, pathlib, string, zlib
-
-          folder = pathlib.Path("build_payload")
-          parts = [p.read_text().strip() for p in sorted(folder.glob("part-*"))]
-          joined = "".join(parts)
-          alphabet = string.ascii_uppercase + string.ascii_lowercase + string.digits + "+/"
-
-          def full_check(text):
-              try:
-                  raw = base64.b64decode(text, validate=True)
-                  unpacked = gzip.decompress(raw)
-                  if b"BlitzZeroAndroid/project.godot" in unpacked and b"BlitzZeroAndroid/export_presets.cfg" in unpacked:
-                      return raw
-              except Exception:
-                  pass
-              return None
-
-          raw = full_check(joined)
-          if raw is None:
-              damaged = base64.b64decode(joined + "A", validate=False)
-
-              # Locate the first zlib failure.
-              probe = zlib.decompressobj(31)
-              fail_byte = None
-              for i, b in enumerate(damaged):
-                  try:
-                      probe.decompress(bytes((b,)))
-                  except zlib.error:
-                      fail_byte = i
-                      break
-              if fail_byte is None:
-                  raise SystemExit("Unable to localise gzip corruption")
-
-              approx = (fail_byte * 4) // 3
-              print(f"gzip first fails near compressed byte {fail_byte}; searching around base64 char {approx}")
-
-              # Build a clean decompressor checkpoint well before the damaged region.
-              checkpoint_byte = max(0, fail_byte - 2600)
-              base_dec = zlib.decompressobj(31)
-              base_dec.decompress(damaged[:checkpoint_byte])
-
-              fixed = None
-              radius = 2600
-              lo = max(0, approx - radius)
-              hi = min(len(joined), approx + radius + 1)
-              test_end = min(len(damaged), fail_byte + 1024)
-
-              for pos in range(lo, hi):
-                  left, right = joined[:pos], joined[pos:]
-                  for ch in alphabet:
-                      candidate = left + ch + right
-                      try:
-                          candidate_raw = base64.b64decode(candidate, validate=True)
-                          d = base_dec.copy()
-                          d.decompress(candidate_raw[checkpoint_byte:test_end])
-                      except Exception:
-                          continue
-
-                      # Very few candidates survive zlib. Validate gzip CRC/tar contents.
-                      try:
-                          unpacked = gzip.decompress(candidate_raw)
-                      except Exception:
-                          continue
-                      if b"BlitzZeroAndroid/project.godot" in unpacked and b"BlitzZeroAndroid/export_presets.cfg" in unpacked:
-                          fixed = (candidate_raw, pos, ch)
-                          break
-                  if fixed:
-                      break
-
-              if fixed is None:
-                  raise SystemExit("Could not recover the missing Base64 character")
-              raw, pos, ch = fixed
-              print(f"Recovered payload at Base64 position {pos}.")
-          else:
-              print("Payload already valid.")
-
-          pathlib.Path("brigade.tar.gz").write_bytes(raw)
-          print(f"Verified gzip payload: {len(raw)} bytes")
-          PY
+          cat fresh_payload/part-* | base64 -d > brigade.tar.gz
+          echo "19be3b7b58eb7f36f400ed7e010384990f31cdb8dd7bf023b218d8ee9629f02b  brigade.tar.gz" | sha256sum -c -
+          gzip -t brigade.tar.gz
           tar -xzf brigade.tar.gz
           test -f BlitzZeroAndroid/project.godot
           test -f BlitzZeroAndroid/export_presets.cfg
+          echo "Verified Brigade Zero source payload."
 
       - name: Generate original placeholder SFX
         shell: bash
