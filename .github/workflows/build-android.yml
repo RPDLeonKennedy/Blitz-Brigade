@@ -61,6 +61,34 @@ jobs:
                   w.writeframes(b"".join(frames))
           PY
 
+      - name: Apply Godot 4.7 Android compatibility fixes
+        shell: bash
+        run: |
+          # Godot Object already defines get_class(), so use an unambiguous data accessor.
+          sed -i 's/^func get_class(/func get_class_data(/' BlitzZeroAndroid/scripts/game_data.gd
+          sed -i 's/GameData\.get_class(/GameData.get_class_data(/g' BlitzZeroAndroid/scripts/*.gd
+
+          # Valid empty AudioBusLayout resource.
+          cat > BlitzZeroAndroid/default_bus_layout.tres <<'EOF'
+          [gd_resource type="AudioBusLayout" format=3]
+
+          [resource]
+          EOF
+
+          # Android export requires ETC2/ASTC import support.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("BlitzZeroAndroid/project.godot")
+          s = p.read_text()
+          key = "textures/vram_compression/import_etc2_astc=true"
+          if key not in s:
+              anchor = 'renderer/rendering_method.mobile="gl_compatibility"\n'
+              if anchor not in s:
+                  raise SystemExit("Rendering anchor not found")
+              s = s.replace(anchor, anchor + key + "\n", 1)
+          p.write_text(s)
+          PY
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
