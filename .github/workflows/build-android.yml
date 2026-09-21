@@ -68,6 +68,9 @@ jobs:
           sed -i 's/^func get_class(/func get_class_data(/' BlitzZeroAndroid/scripts/game_data.gd
           sed -i 's/GameData\.get_class(/GameData.get_class_data(/g' BlitzZeroAndroid/scripts/*.gd
 
+          # Godot 4.7 cannot infer a concrete Vector3 from an untyped Array index.
+          sed -i 's/var best := spawns\[0\]/var best: Vector3 = spawns[0]/' BlitzZeroAndroid/scripts/main.gd
+
           # Valid empty AudioBusLayout resource.
           cat > BlitzZeroAndroid/default_bus_layout.tres <<'EOF'
           [gd_resource type="AudioBusLayout" format=3]
